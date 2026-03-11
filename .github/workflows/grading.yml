@@ -1,0 +1,189 @@
+name: Grading Checks
+
+on:
+  workflow_dispatch:  # manual trigger
+    inputs:
+      pitt_id:
+        description: 'your pitt id'
+        type: string
+        required: true
+        default: 'xzy123'
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  check-s3-bucket:
+    name: Check S3 Bucket
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Test S3 Bucket
+        run: |
+          echo "======================================"
+          echo "testing S3 bucket: cc-images-${{ github.event.inputs.pitt_id }}"
+          echo "======================================"
+
+          BUCKET_NAME="cc-images-${{ github.event.inputs.pitt_id }}"
+
+          if aws s3 ls "s3://$BUCKET_NAME" 2>/dev/null; then
+            echo "PASS: s3 bucket exists: $BUCKET_NAME"
+          else
+            echo "FAIL: s3 bucket does not exist: $BUCKET_NAME"
+            exit 1
+          fi
+
+          # check uploads/ prefix exists
+          if aws s3 ls "s3://$BUCKET_NAME/uploads/" 2>/dev/null; then
+            echo "PASS: uploads/ prefix exists"
+          else
+            echo "FAIL: uploads/ prefix does not exist"
+            exit 1
+          fi
+
+  check-lambda-functions:
+    name: Check Lambda Functions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Test Lambda Functions
+        run: |
+          echo "======================================"
+          echo "testing lambda functions"
+          echo "======================================"
+
+          # check each required function
+          for func in metadata-extractor image-validator; do
+            if aws lambda get-function --function-name $func --region ${{ env.AWS_REGION }} 2>/dev/null; then
+              echo "PASS: $func exists"
+
+              # check if using container image
+              PACKAGE_TYPE=$(aws lambda get-function \
+                --function-name $func \
+                --region ${{ env.AWS_REGION }} \
+                --query 'Configuration.PackageType' \
+                --output text)
+
+              if [ "$PACKAGE_TYPE" = "Image" ]; then
+                echo "PASS: $func is using container image"
+              else
+                echo "FAIL: $func is not using container image (found: $PACKAGE_TYPE)"
+                exit 1
+              fi
+            else
+              echo "FAIL: $func not found"
+              exit 1
+            fi
+            echo ""
+          done
+
+      - name: Check DLQ Configuration
+        run: |
+          echo "======================================"
+          echo "testing DLQ configuration"
+          echo "======================================"
+
+          # check if image-processing-dlq exists
+          DLQ_URL=$(aws sqs get-queue-url \
+            --queue-name image-processing-dlq \
+            --region ${{ env.AWS_REGION }} \
+            --query 'QueueUrl' \
+            --output text 2>/dev/null) || true
+
+          if [ -n "$DLQ_URL" ]; then
+            echo "PASS: image-processing-dlq exists: $DLQ_URL"
+          else
+            echo "FAIL: image-processing-dlq not found"
+            exit 1
+          fi
+
+          # check if DLQ is configured on image-validator
+          DLQ_ARN=$(aws lambda get-function-configuration \
+            --function-name image-validator \
+            --region ${{ env.AWS_REGION }} \
+            --query 'DeadLetterConfig.TargetArn' \
+            --output text 2>/dev/null) || true
+
+          if [ -n "$DLQ_ARN" ] && [ "$DLQ_ARN" != "None" ]; then
+            echo "PASS: DLQ configured on image-validator: $DLQ_ARN"
+          else
+            echo "FAIL: DLQ not configured on image-validator"
+            exit 1
+          fi
+
+  check-ecr-repositories:
+    name: Check ECR Repositories
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Test ECR Repositories
+        run: |
+          echo "======================================"
+          echo "testing ECR repositories"
+          echo "======================================"
+
+          for repo in metadata-extractor image-validator; do
+            IMAGE_COUNT=$(aws ecr list-images \
+              --repository-name $repo \
+              --region ${{ env.AWS_REGION }} \
+              --query 'length(imageIds)' \
+              --output text 2>/dev/null) || true
+
+            if [ -n "$IMAGE_COUNT" ] && [ "$IMAGE_COUNT" -gt 0 ]; then
+              echo "PASS: $repo has $IMAGE_COUNT image(s)"
+            else
+              echo "FAIL: $repo has no images or does not exist"
+              exit 1
+            fi
+          done
+
+  functional-test:
+    name: Functional Test
+    runs-on: ubuntu-latest
+    needs: [check-s3-bucket, check-lambda-functions, check-ecr-repositories]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload test files and verify pipeline
+        run: |
+          chmod +x hack/test.sh
+          hack/test.sh ${{ github.event.inputs.pitt_id }}
