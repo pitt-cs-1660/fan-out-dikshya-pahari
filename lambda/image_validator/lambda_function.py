@@ -41,22 +41,39 @@ def lambda_handler(event, context):
 
     print("=== image validator invoked ===")
 
-    # todo: loop through event['Records']
-    # todo: for each record, get the SNS message string from record['Sns']['Message']
-    # todo: parse the SNS message string as JSON to get the S3 event
-    # todo: loop through the S3 event's 'Records'
-    # todo: extract bucket name from s3_record['s3']['bucket']['name']
-    # todo: extract object key from s3_record['s3']['object']['key']
-    # todo: use is_valid_image() to check the file extension
-    # todo: if valid:
-    #         - print the [VALID] message: print(f"[VALID] {key} is a valid image file")
-    #         - get the filename from the key (e.g. "uploads/test.jpg" -> "test.jpg")
-    #           hint: use key.split('/')[-1]
-    #         - copy the object to processed/valid/{filename}
-    #           hint: s3.copy_object(Bucket=bucket, Key=f"processed/valid/{filename}",
-    #                 CopySource={'Bucket': bucket, 'Key': key})
-    # todo: if invalid:
-    #         - print the [INVALID] message: print(f"[INVALID] {key} is not a valid image type")
-    #         - raise ValueError to trigger DLQ
+    # loop through SNS records
+    for record in event['Records']:
+        # get the SNS message string and parse it as JSON to get the S3 event
+        sns_message = record['Sns']['Message']
+        s3_event = json.loads(sns_message)
+
+        # loop through the S3 records inside the SNS message
+        for s3_record in s3_event['Records']:
+            # extract bucket and key from the S3 event
+            bucket = s3_record['s3']['bucket']['name']
+            key    = s3_record['s3']['object']['key']
+
+            if is_valid_image(key):
+                # log valid message
+                print(f"[VALID] {key} is a valid image file")
+
+                # get just the filename: "uploads/test.jpg" -> "test.jpg"
+                filename = key.split('/')[-1]
+
+                # copy valid file to processed/valid/{filename}
+                s3.copy_object(
+                    Bucket=bucket,
+                    Key=f"processed/valid/{filename}",
+                    CopySource={'Bucket': bucket, 'Key': key}
+                )
+
+                print(f"[VALID] Copied to s3://{bucket}/processed/valid/{filename}")
+
+            else:
+                # log invalid message
+                print(f"[INVALID] {key} is not a valid image type")
+
+                # raise exception to trigger the DLQ
+                raise ValueError(f"[INVALID] {key} is not a valid image type")
 
     return {'statusCode': 200, 'body': 'validation complete'}
