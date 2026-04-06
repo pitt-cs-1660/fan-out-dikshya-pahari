@@ -10,146 +10,118 @@ env:
   AWS_LAMBDA_ROLE_ARN: arn:aws:iam::154290454507:role/lambda-image-processing-role  # replace with your ARN
 
 jobs:
+ 
+  # ── Job 1: metadata-extractor ────────────────────────────────────────────────
   deploy-metadata-extractor:
-    name: Deploy Metadata Extractor Lambda
+    name: Deploy metadata-extractor
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-
+ 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+ 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
+ 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-
+ 
       - name: Build, tag, and push metadata-extractor image to Amazon ECR
-        id: metadata-extractor-build-image
+        id: build-metadata-extractor
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: metadata-extractor
           IMAGE_TAG: ${{ github.sha }}
         run: |
           cd lambda/metadata_extractor
-          ######
-          #
-          #  TODO: implement build and push to ECR
-          #
-          ######
-          exit 1
-
-      - name: Check if Lambda function exists
-        id: check-lambda-metadata-extractor
-        run: |
-          if aws lambda get-function --function-name metadata-extractor --region ${{ env.AWS_REGION }} 2>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Lambda function
-        if: steps.check-lambda-metadata-extractor.outputs.exists == 'false'
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+ 
+      - name: Deploy metadata-extractor Lambda
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: metadata-extractor
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_URI: ${{ steps.build-metadata-extractor.outputs.image }}
         run: |
-          aws lambda create-function \
-            --function-name metadata-extractor \
-            --package-type Image \
-            --code ImageUri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            --role ${{ env.AWS_LAMBDA_ROLE_ARN }} \
-            --timeout 30 \
-            --memory-size 128 \
-            --region ${{ env.AWS_REGION }}
-
-      - name: Update metadata-extractor Lambda function
-        if: steps.check-lambda-metadata-extractor.outputs.exists == 'true'
-        uses: aws-actions/aws-lambda-deploy@v1.1.0
-        with:
-          function-name: metadata-extractor
-          package-type: Image  # no zip!
-          image-uri: ${{ steps.metadata-extractor-build-image.outputs.image }}  # ECR image URI from previous step
-          role: ${{ env.AWS_LAMBDA_ROLE_ARN }}
-          publish: true
-
+          # create the function if it doesn't exist, otherwise update it
+          if aws lambda get-function --function-name metadata-extractor --region $AWS_REGION 2>/dev/null; then
+            echo "updating existing metadata-extractor function..."
+            aws lambda update-function-code \
+              --function-name metadata-extractor \
+              --image-uri $IMAGE_URI \
+              --region $AWS_REGION
+          else
+            echo "creating metadata-extractor function..."
+            aws lambda create-function \
+              --function-name metadata-extractor \
+              --package-type Image \
+              --code ImageUri=$IMAGE_URI \
+              --role $AWS_LAMBDA_ROLE_ARN \
+              --timeout 30 \
+              --memory-size 128 \
+              --region $AWS_REGION
+          fi
+ 
+  # ── Job 2: image-validator ───────────────────────────────────────────────────
   deploy-image-validator:
-    name: Deploy Image Validator Lambda
+    name: Deploy image-validator
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-
+ 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+ 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
+ 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-
+ 
       - name: Build, tag, and push image-validator image to Amazon ECR
-        id: image-validator-build-image
+        id: build-image-validator
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: image-validator
           IMAGE_TAG: ${{ github.sha }}
         run: |
           cd lambda/image_validator
-          ######
-          #
-          #  TODO: implement build and push to ECR
-          #
-          ######
-          exit 1
-
-      - name: Check if Lambda function exists
-        id: check-lambda-image-validator
-        run: |
-          if aws lambda get-function --function-name image-validator --region ${{ env.AWS_REGION }} 2>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Lambda function
-        if: steps.check-lambda-image-validator.outputs.exists == 'false'
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+ 
+      - name: Deploy image-validator Lambda
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: image-validator
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_URI: ${{ steps.build-image-validator.outputs.image }}
         run: |
-          aws lambda create-function \
-            --function-name image-validator \
-            --package-type Image \
-            --code ImageUri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            --role ${{ env.AWS_LAMBDA_ROLE_ARN }} \
-            --timeout 30 \
-            --memory-size 128 \
-            --region ${{ env.AWS_REGION }}
-
-      - name: Update image-validator Lambda function
-        if: steps.check-lambda-image-validator.outputs.exists == 'true'
-        uses: aws-actions/aws-lambda-deploy@v1.1.0
-        with:
-          function-name: image-validator
-          package-type: Image  # no zip!
-          image-uri: ${{ steps.image-validator-build-image.outputs.image }}  # ECR image URI from previous step
-          role: ${{ env.AWS_LAMBDA_ROLE_ARN }}
-          publish: true
+          # create the function if it doesn't exist, otherwise update it
+          if aws lambda get-function --function-name image-validator --region $AWS_REGION 2>/dev/null; then
+            echo "updating existing image-validator function..."
+            aws lambda update-function-code \
+              --function-name image-validator \
+              --image-uri $IMAGE_URI \
+              --region $AWS_REGION
+          else
+            echo "creating image-validator function..."
+            aws lambda create-function \
+              --function-name image-validator \
+              --package-type Image \
+              --code ImageUri=$IMAGE_URI \
+              --role $AWS_LAMBDA_ROLE_ARN \
+              --timeout 30 \
+              --memory-size 128 \
+              --region $AWS_REGION
+          fi
+ 
